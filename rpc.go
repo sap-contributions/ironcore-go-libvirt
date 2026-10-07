@@ -288,8 +288,12 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 	}
 
 	if out != nil {
-		abort := make(chan bool)
-		outErr := make(chan error)
+		// abort and outErr must be buffered: SendStream checks abort only
+		// between reads from out, so by the time the stream ends the sender
+		// goroutine may already have exited, and an unbuffered abort send
+		// would block forever.
+		abort := make(chan bool, 1)
+		outErr := make(chan error, 1)
 		go func() {
 			outErr <- l.socket.SendStream(serial, proc, program, out, abort)
 		}()
@@ -301,18 +305,44 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 			return resp, err
 		}
 
-		err = <-outErr
-		if err != nil {
-			return response{}, err
+		if in == nil {
+			// Outgoing stream only (e.g. StorageVolUpload): wait for the
+			// sender to finish so its error reaches the caller.
+			err = <-outErr
+			if err != nil {
+				return response{}, err
+			}
+			return resp, nil
 		}
+
+		// Bidirectional stream: the incoming half has ended, so the session
+		// is over. Signal the sender to stop if it is between reads, but
+		// never wait for it: it may be blocked reading from out (interactive
+		// stdin stays open), and waiting would deadlock when libvirtd ended
+		// the stream first. The sender goroutine exits once the caller
+		// closes out as the session tears down.
+		select {
+		case abort <- true:
+		default:
+		}
+
+		// Surface a sender error only if one has already been reported; do
+		// not block on it.
+		select {
+		case err = <-outErr:
+			if err != nil {
+				return response{}, err
+			}
+		default:
+		}
+
+		return resp, nil
 	}
 
-	switch in {
-	case nil:
+	if in == nil {
 		return resp, nil
-	default:
-		return l.processIncomingStream(c, in)
 	}
+	return l.processIncomingStream(c, in)
 }
 
 // processIncomingStream is called once we've successfully sent a request to
