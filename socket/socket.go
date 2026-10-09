@@ -2,6 +2,7 @@ package socket
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -344,13 +345,41 @@ func (s *Socket) SendPacket(
 }
 
 // SendStream sends a stream of packets to libvirt on the socket connection.
+//
+// Compatibility layer for pre-context callers: it adapts the abort channel to
+// a context and delegates to SendStreamCtx, which holds the actual streaming
+// logic.
 func (s *Socket) SendStream(serial int32, proc uint32, program uint32,
 	stream io.Reader, abort chan bool) error {
+	// context.Background is the permanent adaptation point for callers of the
+	// old channel-based API.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		// A nil abort channel blocks forever; ctx.Done() guarantees the
+		// goroutine exits once SendStreamCtx returns.
+		select {
+		case <-abort:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return s.SendStreamCtx(ctx, serial, proc, program, stream)
+}
+
+// SendStreamCtx sends a stream of packets to libvirt on the socket connection.
+// Cancellation is only observed between reads from stream; a blocked
+// stream.Read is not interrupted. When ctx is done the stream is aborted by
+// sending a packet with StatusError.
+func (s *Socket) SendStreamCtx(ctx context.Context, serial int32, proc uint32,
+	program uint32, stream io.Reader) error {
 	// Keep total packet length under 4 MiB to follow possible limitation in libvirt server code
 	buf := make([]byte, 4*MiB-unsafe.Sizeof(_p))
 	for {
 		select {
-		case <-abort:
+		case <-ctx.Done():
 			return s.SendPacket(serial, proc, program, nil, Stream, StatusError)
 		default:
 		}
