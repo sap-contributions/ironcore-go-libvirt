@@ -16,6 +16,7 @@ package libvirt
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -288,31 +289,60 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 	}
 
 	if out != nil {
-		abort := make(chan bool)
-		outErr := make(chan error)
+		// TODO: context.TODO marks the spot where a caller-provided context
+		// will be threaded through once the requestStream API gains one.
+		// For now the stream lifecycle is managed purely locally.
+		ctx, cancel := context.WithCancel(context.TODO())
+		defer cancel()
+		// outErr must be buffered: on teardown paths that don't wait for the
+		// sender, an unbuffered send would leak the sender goroutine.
+		outErr := make(chan error, 1)
 		go func() {
-			outErr <- l.socket.SendStream(serial, proc, program, out, abort)
+			outErr <- l.socket.SendStreamCtx(ctx, serial, proc, program, out)
 		}()
 
 		// Even without incoming stream server sends confirmation once all data is received
 		resp, err = l.processIncomingStream(c, in)
 		if err != nil {
-			abort <- true
+			cancel()
 			return resp, err
 		}
 
-		err = <-outErr
-		if err != nil {
-			return response{}, err
+		if in == nil {
+			// Outgoing stream only (e.g. StorageVolUpload): wait for the
+			// sender to finish so its error reaches the caller.
+			err = <-outErr
+			if err != nil {
+				return response{}, err
+			}
+			return resp, nil
 		}
+
+		// Bidirectional stream: the incoming half has ended, so the session
+		// is over. Cancel the send context so the sender stops between reads,
+		// but never wait for it: it may be blocked reading from out
+		// (interactive stdin stays open), and waiting would deadlock when
+		// libvirtd ended the stream first. The sender goroutine exits once
+		// the caller closes out as the session tears down.
+		cancel()
+
+		// Surface a sender error only if one has already been reported; do
+		// not block on it.
+		select {
+		case err = <-outErr:
+			if err != nil {
+				return response{}, err
+			}
+		default:
+		}
+
+		return resp, nil
 	}
 
-	switch in {
-	case nil:
+	if in == nil {
 		return resp, nil
-	default:
-		return l.processIncomingStream(c, in)
 	}
+	return l.processIncomingStream(c, in)
 }
 
 // processIncomingStream is called once we've successfully sent a request to
