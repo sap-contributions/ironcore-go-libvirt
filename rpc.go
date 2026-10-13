@@ -304,7 +304,7 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 		// Even without incoming stream server sends confirmation once all data is received
 		resp, err = l.processIncomingStream(c, in)
 		if err != nil {
-			cancel()
+			cancel(nil)
 			return resp, err
 		}
 
