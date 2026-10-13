@@ -292,11 +292,8 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 		// TODO: context.TODO marks the spot where a caller-provided context
 		// will be threaded through once the requestStream API gains one.
 		// For now the stream lifecycle is managed purely locally.
-		ctx, cancel := context.WithCancel(context.TODO())
-		defer cancel()
-		// outErr must be buffered: on teardown paths that don't wait for the
-		// sender, an unbuffered send would leak the sender goroutine.
-		outErr := make(chan error, 1)
+		ctx, cancel := context.WithCancelCause(context.TODO())
+		defer cancel(nil)
 		go func() {
 			cancel(l.socket.SendStreamCtx(ctx, serial, proc, program, out))
 		}()
