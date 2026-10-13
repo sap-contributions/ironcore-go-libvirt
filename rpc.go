@@ -308,7 +308,8 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 		if in == nil {
 			// Outgoing stream only (e.g. StorageVolUpload): wait for the
 			// sender to finish so its error reaches the caller.
-			err = <-outErr
+			<-ctx.Done()
+			err = context.Cause(ctx)
 			if err != nil {
 				return response{}, err
 			}
