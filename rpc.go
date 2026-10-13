@@ -298,7 +298,7 @@ func (l *Libvirt) requestStream(proc uint32, program uint32, payload []byte,
 		// sender, an unbuffered send would leak the sender goroutine.
 		outErr := make(chan error, 1)
 		go func() {
-			outErr <- l.socket.SendStreamCtx(ctx, serial, proc, program, out)
+			cancel(l.socket.SendStreamCtx(ctx, serial, proc, program, out))
 		}()
 
 		// Even without incoming stream server sends confirmation once all data is received
